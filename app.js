@@ -698,7 +698,7 @@ const geometry = Shader(
   vec4 Pixel(vec2 uv) {
     Ray camera = Camera(uv);
     vec2 boundary = SphereBoundary(camera, EVEREST_RADIUS);
-    float distance = RayMarcher(camera, boundary.x);
+    float distance = boundary.x;
     float depth = distance / FAR;
     vec3 position = camera.origin + camera.direction * distance;
     float shadows = SoftShadows(position, SUN);
@@ -1640,7 +1640,7 @@ const light = Shader(
       vec3 albedo = (Basemap(sphere));
       Material material = Material(vec3(albedo), .0, 0., .04);
     
-      vec3 indirect = IBLBaked(camera, planet, material, (irradiance), ao) * mix(.5, 1., shadows);
+      vec3 indirect = IBLBaked(camera, planet, material, (irradiance), ao);
       vec3 direct = PBR(camera, planet, material, SUN) * ao * shadows;
 
       color = mix(indirect, direct, direct);
