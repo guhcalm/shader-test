@@ -4,13 +4,14 @@ const TextureComponents = new Map()
 const GlobalUniformComponents = new Map([
   ['iTime', ['uniform1f', 0]],
   ['iResolution', ['uniform2fv', new Float32Array([0, 0])]],
-  ['iMouse', ['uniform2fv', new Float32Array([0, 0])]],
+  ['iMouse', ['uniform2fv', new Float32Array([500, 500])]],
   ['iCamera', ['uniform3fv', new Float32Array([0, 0, 0])]],
   ['iFrame', ['uniform1i', 0]],
   ['TILE_LONGITUDE_START', ['uniform1f', -Math.PI]],
   ['TILE_LONGITUDE_END', ['uniform1f', Math.PI]],
   ['TILE_LATITUDE_START', ['uniform1f', -85.05112878 * (Math.PI / 180)]],
-  ['TILE_LATITUDE_END', ['uniform1f', 85.05112878 * (Math.PI / 180)]]
+  ['TILE_LATITUDE_END', ['uniform1f', 85.05112878 * (Math.PI / 180)]],
+  ['iZoom', ['uniform1f', 0]]
 ])
 
 const UpdateCameraSystem = () => {
@@ -19,11 +20,36 @@ const UpdateCameraSystem = () => {
   const iTime = GlobalUniformComponents.get('iTime')[1]
   const { PI, sin, cos } = Math
   const mix = (a, b, t) => (t < 0 ? a : t > 1 ? b : (1 - t) * a + t * b)
-  const m = { x: (iMouse[0] - 0.5 * iResolution[0]) / iResolution[1], y: (iMouse[1] - 0.5 * iResolution[1]) / iResolution[1] }
-  const theta = -m.x * PI * 2 - 1.5
-  const radius = 55.5 || mix(2, 5.5, sin(iTime * 0.001) * 0.5 + 0.5)
-  const iCamera = new Float32Array([radius * sin(theta), radius * mix(1, m.y, 0.7), radius * cos(theta)])
+  const m = { u: iMouse[0] / iResolution[0], v: iMouse[1] / iResolution[1] }
+
+  const theta = -m.x * PI * 2 - 2.3
+  const radius = 55
+  const CartesianBySpherical = ({ longitude, latitude }) => {
+    const { cos, sin } = Math
+    const x = cos(latitude) * sin(longitude) // x = 0 quando longitude é 0 ou ±180°, e ±1 em ±90°
+    const y = sin(latitude) // y = -1 em -90°, 0 em 0°, e 1 em 90°
+    const z = cos(latitude) * cos(longitude) // z = 1 em 0°, -1 em ±180°, e 0 em ±90°
+    return { x, y, z }
+  }
+  const SphericalByEquirectangular = ({ u, v }) => {
+    const { PI } = Math
+    const radians = deg => (deg * PI) / 180
+    const longitude = (u * 2 - 1) * radians(180)
+    const latitude = (v * 2 - 1) * radians(90)
+    return { longitude, latitude }
+  }
+  const lerp = (a, b, t) => (t < 0 ? a : t > 1 ? b : (1 - t) * a + t * b)
+  const zoom = Math.floor(lerp(0, 19, GlobalUniformComponents.get('iZoom')[1]))
+  const { longitude, latitude } = SphericalByEquirectangular(m)
+  const { x, y, z } = CartesianBySpherical({ longitude: longitude, latitude })
+  const current = GlobalUniformComponents.get('iCamera')[1]
+  const iCamera = new Float32Array([lerp(current[0], radius * x, 0.5 / 2 ** zoom), lerp(current[1], radius * y, 0.5 / 2 ** zoom), lerp(current[2], radius * z, 0.5 / 2 ** zoom)])
   GlobalUniformComponents.get('iCamera')[1] = iCamera
+}
+
+document.body.onclick = () => {
+  const sinal = GlobalUniformComponents.get('iZoom')[1] >= 1 ? -1 : +1
+  GlobalUniformComponents.get('iZoom')[1] += sinal * (1 / 19)
 }
 
 // FRONT BUFFER
@@ -32,7 +58,7 @@ const UpdateCameraSystem = () => {
   const { width, height } = document.documentElement.getBoundingClientRect()
   canvas.width = width
   canvas.height = height
-  GlobalUniformComponents.get('iResolution')[1] = new Float32Array([width, height])
+  GlobalUniformComponents.get('iResolution')[1] = new Float32Array([canvas.width, canvas.height])
   canvas.onmousemove = ({ x, y }) => {
     y = canvas.height - y
     GlobalUniformComponents.get('iMouse')[1] = new Float32Array([x, y])
@@ -81,7 +107,7 @@ const RepeatedTexture = async (entity, url) => {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img)
   TextureComponents.set(entity, { id, url, texture, img })
 }
-const Shader = (name, fragmentCode) => {
+const Shader = (name, fragmentCode, { width, height } = {}) => {
   const gl = ContextComponents.get('Front-Buffer')
 
   const vertices = new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1])
@@ -374,7 +400,7 @@ await ClampedTexture('JUMP_FLOODING_BUFFER', './JUMP_FLOODING_BUFFER.png')
 
 const BasemapTilesComponents = {}
 
-const BasemapSystem = ({ z }) => {
+const BasemapSystem = () => {
   /*
   const SphereByWgs84 = wgs => {
     const { PI } = Math
@@ -385,26 +411,61 @@ const BasemapSystem = ({ z }) => {
   const iMouse = GlobalUniformComponents.get('iMouse')[1]
   const iResolution = GlobalUniformComponents.get('iResolution')[1]
   const { latitude, longitude } = SphereByWgs84({ u: iMouse[0] / iResolution[0], v: iMouse[1] / iResolution[1] })
+
+
+  vec3 CartesianBySpherical(vec2 spherical) {
+    float x = cos(spherical.y) * sin(spherical.x); // x = 0 quando longitude é 0 ou ±180°, e ±1 em ±90°
+    float y = sin(spherical.y);                    // y = -1 em -90°, 0 em 0°, e 1 em 90°
+    float z = cos(spherical.y) * cos(spherical.x); // z = 1 em 0°, -1 em ±180°, e 0 em ±90°
+    return normalize(vec3(x, y, z));
+  }
+  vec2 SphericalByCartesian(vec3 cartesian) {
+    float longitude = atan(cartesian.x, cartesian.z);
+    float latitude = asin(cartesian.y);
+    return vec2(longitude, latitude);
+  } 
    */
+
+  const lerp = (a, b, t) => (t < 0 ? a : t > 1 ? b : (1 - t) * a + t * b)
+  const z = Math.floor(lerp(0, 19, GlobalUniformComponents.get('iZoom')[1]))
   const iCamera = GlobalUniformComponents.get('iCamera')[1]
   const SphereByDirection = direction => {
     const length = Math.hypot(direction[0], direction[1], direction[2])
     const normalized = { x: direction[0] / length, y: direction[1] / length, z: direction[2] / length }
-    const { atan, asin } = Math
-    const longitude = atan(normalized.z, normalized.x)
+    const { atan2, asin } = Math
+    const longitude = atan2(normalized.x, normalized.z)
     const latitude = asin(normalized.y)
     return { longitude, latitude }
   }
-  const { latitude, longitude } = SphereByDirection(iCamera)
-
+  const { longitude, latitude } = SphereByDirection(iCamera)
   const { width, height } = document.documentElement.getBoundingClientRect()
+
+  /*
+  
+  vec2 MercatorBySpherical(vec2 spherical) {
+    #define ln(value) log(value)
+    const float PI = radians(180.);
+    const float MAX_LATITUDE = atan(sinh(PI)); // 85.05112878°
+    spherical.y = min(max(-MAX_LATITUDE, spherical.y), MAX_LATITUDE);
+    float u = (spherical.x / PI) * .5 + .5;
+    float v = (PI - ln(tan(PI / 4. + spherical.y / 2.))) / (2. * PI);
+    return vec2(u, v);
+  }
+  vec2 SphericalByMercator(vec2 mercator) {
+    const float PI = radians(180.);
+    float longitude = (mercator.x * 2. - 1.) * PI;
+    float latitude = 2. * atan(exp(((1. - mercator.y) - 0.5) * 2. * PI)) - PI / 2.;
+    return vec2(longitude, latitude);
+  }
+
+  */
 
   const SphereToPseudoMercator = ({ latitude, longitude }) => {
     const { log: ln, tan, PI: π } = Math
     const radians = deg => (deg * π) / 180
     const clamp = (min, max, value) => Math.max(Math.min(value, max), min)
     const saturate = value => clamp(0, 1, value)
-    const U = λ => (λ + π) / (2 * π)
+    const U = λ => (λ / π) * 0.5 + 0.5
     const V = ϕ => (π - ln(tan(π / 4 + ϕ / 2))) / (2 * π)
     const λ = longitude
     const ϕ = clamp(radians(-85.05112878), radians(85.05112878), latitude)
@@ -413,8 +474,8 @@ const BasemapSystem = ({ z }) => {
 
   function WebMercatorTile({ zoom: z, latitude, longitude }) {
     const { u, v } = SphereToPseudoMercator({ latitude, longitude })
-    const i = Math.floor(u * 2 ** z) - (u >= 1 ? 1 : 0)
-    const j = Math.floor(v * 2 ** z) - (v >= 1 ? 1 : 0)
+    const i = Math.floor(u * 2 ** z)
+    const j = Math.floor(v * 2 ** z)
     return { z, u, v, i, j }
   }
 
@@ -460,7 +521,7 @@ const BasemapSystem = ({ z }) => {
         if (!(id in BasemapTilesComponents)) {
           const img = new Image(256, 256)
           img.crossOrigin = 'anonymous'
-          img.src = i + j > 0 ? OSM({ z, x, y }) : OSM({ z, x, y })
+          img.src = OSM({ z, x, y })
           BasemapTilesComponents[id] = img
         }
 
@@ -478,8 +539,9 @@ const BasemapSystem = ({ z }) => {
     const ROW_END = (target.j - neighboors) / 2 ** z
 
     const SphereByMercator = (u, v) => {
-      const clamp = angle => Math.min(Math.max(-85.05112878, angle), 85.05112878)
       const { PI, exp, atan } = Math
+      const radians = deg => (deg * PI) / 180
+      const clamp = angle => Math.min(Math.max(radians(-85.05112878), angle), radians(85.05112878))
       const longitude = PI * (2 * u - 1)
       const latitude = 2 * atan(exp((1 - v - 0.5) * 2 * PI)) - PI / 2
       return [longitude, clamp(latitude)]
@@ -510,13 +572,14 @@ const BasemapSystem = ({ z }) => {
         column++
 
         if (y < 0 || y >= 2 ** z) continue
-        if (x < 0) x = z === 0 ? 0 : 2 ** z + x
-        if (x >= 2 ** z) x = z === 0 ? 0 : x - 2 ** z
+        if (x < 0 || x >= 2 ** z) continue
+        // if (x < 0) x = z === 0 ? 0 : 2 ** z + x
+        //if (x >= 2 ** z) x = z === 0 ? 0 : x - 2 ** z
 
         const id = [z, x, y].join('-')
         if (!(id in BasemapTilesComponents)) {
           const img = new Image(256, 256)
-          img.src = i + j > 0 ? OSM({ z, x, y }) : OSM({ z, x, y })
+          img.src = OSM({ z, x, y })
           img.crossOrigin = 'anonymous'
           BasemapTilesComponents[id] = img
         }
@@ -541,6 +604,72 @@ const BasemapSystem = ({ z }) => {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tiles)
   TextureComponents.set('OSM_TEXTURE', { id, texture })
 }
+
+const COMMON = `
+  struct Ray { vec3 origin; vec3 direction; };
+  struct Geometry { vec3 position; vec3 normal; float distance; vec2 coord; float path; };
+  struct Uv { float u; float v; };
+  struct Sphere { float longitude; float latitude; };
+  struct Light { vec3 direction; vec3 color; };
+  struct Material { vec3 albedo; float roughness; float metallic; float reflectance; };
+
+  
+  const float PI = radians(180.);
+  const vec3 PLANET_POSITION = vec3(0);
+  const float EVEREST_RADIUS = 1.5;
+  const float MARIANAS_RADIUS = (EVEREST_RADIUS - .1) * .8;
+  const float OCEAN_RADIUS = mix(MARIANAS_RADIUS, EVEREST_RADIUS, .8);
+  const float ATMOSPHERE_RADIUS = EVEREST_RADIUS + .1;
+
+  const float NEAR = .001;
+  const float FAR = 100.;
+  const Geometry DEFAULT_GEOMETRY = Geometry(vec3(0), vec3(0), FAR, vec2(0), 0.);
+  const Light SUN = Light(normalize(vec3(1, 1, 1)), vec3(1));
+
+  #define GammaExpansion(color) pow(vec3(color), vec3(2.2))
+  #define GammaCompression(color) pow(vec3(color), vec3(1. / 2.2))
+  #define saturate(value) clamp(value, 0., 1.)
+
+  vec2 EquirectangularBySpherical(vec2 spherical) {
+    float u = (spherical.x / radians(180.)) * .5 + .5;
+    float v = (spherical.y / radians(90.)) * .5 + .5;
+    return vec2(u, v);
+  }
+  vec2 SphericalByEquirectangular(vec2 Equirectangular) {
+    float longitude = (Equirectangular.x * 2. - 1.) * radians(180.);
+    float latitude =  (Equirectangular.y * 2. - 1.) * radians(90.);
+    return vec2(longitude, latitude);
+  }
+  vec3 CartesianBySpherical(vec2 spherical) {
+    float x = cos(spherical.y) * sin(spherical.x); // x = 0 quando longitude é 0 ou ±180°, e ±1 em ±90°
+    float y = sin(spherical.y);                    // y = -1 em -90°, 0 em 0°, e 1 em 90°
+    float z = cos(spherical.y) * cos(spherical.x); // z = 1 em 0°, -1 em ±180°, e 0 em ±90°
+    return normalize(vec3(x, y, z));
+  }
+  vec2 SphericalByCartesian(vec3 cartesian) {
+    float longitude = atan(cartesian.x, cartesian.z);
+    float latitude = asin(cartesian.y);
+    return vec2(longitude, latitude);
+  } 
+  vec2 MercatorBySpherical(vec2 spherical) {
+    #define ln(value) log(value)
+    const float PI = radians(180.);
+    const float MAX_LATITUDE = atan(sinh(PI)); // 85.05112878°
+    spherical.y = min(max(-MAX_LATITUDE, spherical.y), MAX_LATITUDE);
+    float u = (spherical.x / PI) * .5 + .5;
+    float v = (PI - ln(tan(PI / 4. + spherical.y / 2.))) / (2. * PI);
+    return vec2(u, v);
+  }
+  vec2 SphericalByMercator(vec2 mercator) {
+    const float PI = radians(180.);
+    float longitude = (mercator.x * 2. - 1.) * PI;
+    float latitude = 2. * atan(exp(((1. - mercator.y) - 0.5) * 2. * PI)) - PI / 2.;
+    return vec2(longitude, latitude);
+  }
+
+  #define EquirectangularByCartesian(cartesian) EquirectangularBySpherical(SphericalByCartesian(cartesian))
+  #define CartesianByEquirectangular(equirectangular) CartesianBySpherical(SphericalByEquirectangular(equirectangular))
+`
 
 const elevation = Shader(
   'ELEVATION_BUFFER',
@@ -567,6 +696,15 @@ const elevation = Shader(
   vec4 Pixel(vec2 uv) {
     vec2 wgs = MercatorToWgs84(uv);
     float elevation = Elevation(uv);
+
+    float spacing = 1./30.;
+    float lines = mod(elevation, spacing) / spacing;
+    lines = min(lines * 2., 1.) - max(lines * 2. - 1., 0.);
+    lines /= fwidth(elevation / spacing);
+    lines /= 2.;
+     float t = (abs(fract(30. * elevation)-.5)/fwidth(30. * elevation));
+   
+
     return vec4(vec3(elevation), 1);
   }`
 )
@@ -576,16 +714,25 @@ const view = Shader(
   `uniform vec2 iResolution;
   uniform vec2 iMouse;
   uniform vec3 iCamera;
+  uniform float iTime;
+  uniform float iZoom;
+
+  
+  vec3 Up(vec3 w) {
+    const vec3 up = vec3(0, 1, 0);
+    vec3 u = normalize(cross(w, up));
+    return normalize(cross(u, w));
+  }
 
   /* Panini Camera */
   vec3 CameraDirection(vec2 uv) {
     vec3 origin = iCamera;
-    float focalLength;
+    float z = mix(0., 19., iZoom);
+    float focalLength = pow(2., z) - 1.;
     vec3 target;
     float aspect = iResolution.x / iResolution.y;
     vec3 ndc = vec3(uv * 2.0 - 1.0, 1.0);
     const float fov = radians(20.);
-    const vec3 up = vec3(0, 1, 0);
     float f = tan(fov / 2.0);
     vec3 screen = vec3(ndc.x * aspect * f, ndc.y * f, ndc.z / f);
     float d = sqrt(1.0 + screen.x * screen.x + screen.y * screen.y);
@@ -593,10 +740,117 @@ const view = Shader(
     float v = screen.y / (screen.z + d * focalLength);
     vec3 paniniScreen = normalize(vec3(u, v, 1.0));  
     vec3 w = normalize(target - origin);
-    vec3 uAxis = normalize(cross(w, up));
+    vec3 uAxis = normalize(cross(w, Up(w)));
     vec3 vAxis = normalize(cross(uAxis, w));
     return normalize(mat3(uAxis, vAxis, w) * paniniScreen);
   }
+
+  vec2 DirectionToUV(vec3 direction) {
+    // Parâmetros da câmera e projeção
+    float focalLength = mix(0., 120., sin(iTime * .001) * .5 + .5);
+    float aspect = iResolution.x / iResolution.y;
+    const float fov = radians(20.);
+    
+    // Cálculos auxiliares de projeção
+    float f = tan(fov / 2.0);
+    
+    // Obtemos a projeção Panini invertida
+    float u = direction.x / direction.z;
+    float v = direction.y / direction.z;
+    float d = sqrt(1.0 + u * u + v * v);
+
+    // Aplicando a distância focal para obter o efeito Panini invertido
+    float screenX = u * (d * focalLength);
+    float screenY = v * (d * focalLength);
+
+    // Converte as coordenadas da tela para UV normalizado (0 a 1)
+    vec2 ndc = vec2(screenX / (aspect * f), screenY / f);
+    return (ndc + 1.0) * 0.5; // Ajuste para UV na faixa 0-1
+  }
+
+  vec2 WorldPositionToUV(vec3 worldPosition) {
+    // Parâmetros da câmera e projeção
+    vec3 origin = iCamera;  // Posição da câmera
+    float focalLength = mix(0., 120., sin(iTime * .001) * .5 + .5); // Distância focal variável
+    const float fov = radians(20.);  // Campo de visão
+    float aspect = iResolution.x / iResolution.y;  // Relação de aspecto
+    
+    // Vetores da base da câmera
+    vec3 target = vec3(0.0);  // Direção para onde a câmera está apontando (pode ser ajustado)
+    vec3 w = normalize(target - origin); // Vetor de direção da câmera
+    vec3 uAxis = normalize(cross(vec3(0, 1, 0), w)); // Eixo horizontal da câmera
+    vec3 vAxis = normalize(cross(w, uAxis)); // Eixo vertical da câmera
+
+    // Calcula a direção da posição do mundo para a câmera
+    vec3 viewDir = worldPosition - origin;
+    vec3 localPos = vec3(dot(viewDir, uAxis), dot(viewDir, vAxis), dot(viewDir, w));
+
+    // Conversão da direção para o espaço da tela com efeito Panini
+    float f = tan(fov / 2.0);
+    float d = sqrt(1.0 + localPos.x * localPos.x / (aspect * f) + localPos.y * localPos.y / f);
+    float screenX = localPos.x / (localPos.z + d * focalLength);
+    float screenY = localPos.y / (localPos.z + d * focalLength);
+
+    // Converte para NDC e depois para UV
+    vec2 ndc = vec2(screenX * aspect * f, screenY * f);
+    return (ndc + 1.0) * 0.5; // Ajusta para a faixa UV [0, 1]
+  }
+
+  struct Ray { vec3 origin; vec3 direction; };
+
+  Ray DirectionByUv(in vec2 uv, vec3 origin, vec3 target, float aspect) {
+    vec3 ndc = vec3(uv * 2. - 1., 1.);
+    const float fov = radians(60.);
+    const vec3 up = vec3(0, 1, 0);
+    float f = tan(fov / 2.);
+    vec3 screen = normalize(vec3(ndc.x * aspect * f, ndc.y * f, ndc.z / f));
+    vec3 w = normalize(target - origin);
+    vec3 u = normalize(cross(w, Up(w)));
+    vec3 v = normalize(cross(u, w));
+    return Ray(origin, normalize(mat3(u, v, w) * screen));
+  }
+
+  vec2 UvByDirection(vec3 direction, vec3 origin, vec3 target, float aspect) {
+    const float fov = radians(60.0); // Campo de visão em radianos
+
+    // Calcula a base da câmera
+    vec3 w = normalize(target - origin);      // Vetor de direção da câmera
+    vec3 u = normalize(cross(w, Up(w)));         // Eixo horizontal da câmera
+    vec3 v = normalize(cross(u, w));          // Eixo vertical da câmera
+
+    // Transforma a direção fornecida para o espaço da câmera
+    vec3 screenDir = transpose(mat3(u, v, w)) * direction;
+
+    // Projeção inversa para coordenadas normalizadas da tela (NDC)
+    float f = tan(fov / 2.0);
+    vec2 ndc = vec2(screenDir.x / (aspect * f), screenDir.y / f);
+
+    // Converte NDC para UV na faixa [0, 1]
+    return (ndc + 1.0) * 0.5;
+  }
+
+
+  vec2 UvByWorldPosition(vec3 worldPosition, vec3 origin, vec3 target, float aspect) {
+    const float fov = radians(60.0); // Campo de visão em radianos
+    
+
+    // Calcula a base da câmera
+    vec3 w = normalize(target - origin);      // Vetor de direção da câmera
+    vec3 u = normalize(cross(w, Up(w)));         // Eixo horizontal da câmera
+    vec3 v = normalize(cross(u, w));          // Eixo vertical da câmera
+
+    // Converte a posição no mundo para o espaço da câmera
+    vec3 viewDir = worldPosition - origin;
+    vec3 localPos = vec3(dot(viewDir, u), dot(viewDir, v), dot(viewDir, w));
+
+    // Projeção perspectiva para o plano da tela
+    float f = tan(fov / 2.0);
+    vec2 ndc = vec2(localPos.x / (localPos.z * aspect * f), localPos.y / (localPos.z * f));
+
+    // Converte NDC para UV na faixa [0, 1]
+    return (ndc + 1.0) * 0.5;
+  }
+
 
   vec4 Pixel(vec2 uv) { return vec4(CameraDirection(uv), 0); }`
 )
@@ -608,33 +862,11 @@ const geometry = Shader(
   uniform highp sampler2D ELEVATION_BUFFER;
   uniform highp sampler2D VIEW_BUFFER;
 
-  struct Ray { vec3 origin; vec3 direction; };
-    
-  const float EPSILON = .001;
-  const float NEAR = .001;
-  const float FAR = 100.;
-  const vec3 PLANET_POSITION = vec3(0);
-  const float EVEREST_RADIUS = 1.5;
-  const float MARIANAS_RADIUS = (EVEREST_RADIUS - .1) * .8;
+
+  ${COMMON}
 
   #define Camera(uv) Ray(iCamera, texture(VIEW_BUFFER, uv).xyz)
-  vec3 uvToSphere(vec2 uv) {
-    const float PI = radians(180.);
-    float phi = (uv.x * 2.0 * PI) - PI;
-    float theta = PI * (1.0 - uv.y);
-    float x = sin(theta) * cos(phi);
-    float y = cos(theta);
-    float z = sin(theta) * sin(phi);
-    return vec3(x, y, z);
-  }
-  vec2 sphereToUv(vec3 direction) {
-    const float PI = radians(180.);
-    float phi = atan(direction.z, direction.x);
-    float theta = acos(direction.y);
-    float u = (phi + PI) / (2.0 * PI);
-    float v = theta / PI;
-    return vec2(1. -u, 1. - v);
-  }
+
 
   /* SDF's */
   vec2 SphereBoundary(Ray camera, float radius) {
@@ -653,8 +885,7 @@ const geometry = Shader(
  
   #define Elevationmap(uv) texture(ELEVATION_BUFFER, uv).r
   float PlanetSDF(in vec3 position) {
-    vec3 normal = - normalize(position);
-    vec2 uv = sphereToUv(normalize(position));
+    vec2 uv = EquirectangularByCartesian(normalize(position));
     float bump = Elevationmap(uv);
     float radius = mix(MARIANAS_RADIUS, EVEREST_RADIUS, bump);
     float d = length(position) - radius;
@@ -674,8 +905,6 @@ const geometry = Shader(
     return FAR;
   }
 
-  struct Light { vec3 direction; vec3 color; };
-  const Light SUN = Light(normalize(vec3(1, 1, -1)), vec3(1));
 
   float SoftShadows(vec3 position, Light light) {
     float k = 16.;
@@ -698,7 +927,8 @@ const geometry = Shader(
   vec4 Pixel(vec2 uv) {
     Ray camera = Camera(uv);
     vec2 boundary = SphereBoundary(camera, EVEREST_RADIUS);
-    float distance = boundary.x;
+    return vec4(vec3(boundary.x / FAR), 1.);
+    float distance = RayMarcher(camera, boundary.x);
     float depth = distance / FAR;
     vec3 position = camera.origin + camera.direction * distance;
     float shadows = SoftShadows(position, SUN);
@@ -843,7 +1073,7 @@ const irradiance = Shader(
     float z = sin(theta) * sin(phi);
     return vec3(x, y, z);
   }
-  vec2 sphereToUv(vec3 direction) {
+  vec2 EquirectangularByCartesian(vec3 direction) {
     const float PI = radians(180.);
     float phi = atan(direction.z, direction.x);
     float theta = acos(direction.y);
@@ -864,7 +1094,7 @@ const irradiance = Shader(
     return normalize(random * sign(dot(normal, random)));
   }
 
-  #define Environmentmap(direction) texture(ENVIRONMENT_TEXTURE, sphereToUv(RandomVectorOnHemisphere(direction))).rgb
+  #define Environmentmap(direction) texture(ENVIRONMENT_TEXTURE, EquirectangularByCartesian(RandomVectorOnHemisphere(direction))).rgb
   vec3 Irradiance(vec2 uv) {
     vec3 normal = uvToSphere(uv);
     const int STEPS = 600;
@@ -906,57 +1136,32 @@ const radiance = Shader(
     return Gaussianblur( ENVIRONMENT_TEXTURE, uv, 1./ iResolution.xy );
   }`
 )
-
+*/
+/*
 const normals = PingPongShader(
   'NORMAL_BUFFER',
   `uniform vec3 iCamera;
   uniform float iTime;
   uniform int iFrame;
   uniform vec2 iResolution;
-  uniform highp sampler2D ENVMAP_TEXTURE;
   uniform highp sampler2D ELEVATION_BUFFER;
   uniform highp sampler2D NORMAL_BUFFER;
 
-  struct Ray { vec3 origin; vec3 direction; };
-  struct Geometry { float distance; vec3 position; vec3 normal; };
-  const int PATH_TRACE_STEPS = 100;
-    
+  ${COMMON}
+
+  const int PATH_TRACE_STEPS = 100;  
   const float EPSILON = .001;
   const vec3 PLANET_POSITION = vec3(0);
   const float EVEREST_RADIUS = 1.5;
   const float MARIANAS_RADIUS = (EVEREST_RADIUS - .1) * .8;
-  const float INFINITY = 9999.;
-
-  #define GammaExpansion(color) pow(vec3(color), vec3(2.2))
-  #define GammaCompression(color) pow(vec3(color), vec3(1. / 2.2))
-   #define saturate(value) clamp(value, 0., 1.)
+  const float INFINITY = 000.;
 
   #define Camera(uv) Ray(iCamera, texture(VIEW_BUFFER, uv).xyz)
-  vec3 uvToSphere(vec2 uv) {
-    const float PI = radians(180.);
-    float phi = ((1. - uv.x) * 2.0 * PI) - PI;
-    float theta = PI * (1.0 - uv.y);
-    float x = sin(theta) * cos(phi);
-    float y = cos(theta);
-    float z = sin(theta) * sin(phi);
-    return vec3(x, y, z);
-  }
-  vec2 sphereToUv(vec3 direction) {
-    const float PI = radians(180.);
-    float phi = atan(direction.z, direction.x);
-    float theta = acos(direction.y);
-    float u = (phi + PI) / (2.0 * PI);
-    float v = theta / PI;
-    return vec2(1. - u, 1. - v);
-  }
-
-  // SDF's 
 
   #define Elevationmap(uv) texture(ELEVATION_BUFFER, uv).r
   float PlanetSDF(in vec3 position) {
-    vec3 normal = - normalize(position);
-    vec2 uv = sphereToUv(normalize(position));
-    float bump = Elevationmap(uv);
+    vec2 coord = EquirectangularByCartesian(normalize(position));
+    float bump = Elevationmap(coord);
     float radius = mix(MARIANAS_RADIUS, EVEREST_RADIUS, bump);
     float d = length(position) - radius;
     return d * .1;
@@ -967,14 +1172,7 @@ const normals = PingPongShader(
   float seed;
   float random() { return fract(sin(seed += .1) * 4568.7564); }
   float random(vec2 uv) { return fract(sin(dot(uv, vec2(127.1, 311.7))) * 4568.7564); }
-  vec3 RandomVectorOnHemisphere(vec3 normal) {
-    float u = random();
-    float v = random();
-    float a = 6.283185 * v;
-    float b = u * 2. - 1.;
-    vec3 random = vec3(sqrt(1. - b * b) * vec2(cos(a), sin(a)), b);
-    return normalize(random * sign(dot(normal, random)));
-  }
+
   float SphereTracer(Ray ray) {
     float distance;
     const float NEAR = EPSILON;
@@ -990,28 +1188,6 @@ const normals = PingPongShader(
   }
   #define RayMarcher(camera) SphereTracer(camera)
 
-  struct Light { vec3 direction; vec3 color; };
-  const Light SUN = Light(normalize(vec3(1, 1, -1)), vec3(1));
-
-
-  float SoftShadows(vec3 position, Light light) {
-    float k = 16.;
-    float res = 1.;
-    float t = .1;
-    float ph = 1e10;
-    for(int i = 0; i < 64; i++) {
-    float h = SDF(position + light.direction * t);
-      float y = h * h / (2. * ph);
-      float d = sqrt(h * h - y * y);
-      res = min(res, k * d / max(0., t - y));
-      ph = h;    
-      t += h;
-      if(res < .001 || t > 16.) break;
-    }
-    res = clamp(res, 0., 1.);
-    return res * res * (3. - 2. * res);
-  }
-
   Geometry GeometryBuffer(Ray camera) {
     float distance = RayMarcher(camera);
     vec3 position = camera.origin + camera.direction * distance;
@@ -1024,36 +1200,22 @@ const normals = PingPongShader(
     return Geometry(distance, position, normal);
   }
 
-  vec3 DiffuseRadiance(in Ray camera) {
-    #define Environment(direction) GammaExpansion(texture(ENVMAP_TEXTURE, sphereToUv(direction)).rgb)
-    for (int i; i < 16; i++) {
-      Geometry geometry = GeometryBuffer(camera);
-      if (geometry.distance == INFINITY) return Environment(camera.direction);
-      camera.origin = geometry.position + geometry.normal * .0001;
-      camera.direction = RandomVectorOnHemisphere(geometry.normal);
-    }          
-    return vec3(0);
-  }
-
   vec4 Pixel(vec2 uv) {
-    //if (iFrame > PATH_TRACE_STEPS) discard;
-
     seed = iTime + random(gl_FragCoord.xy / iResolution.xy); 
     vec2 off = vec2(random(), random());
     uv = saturate((off + gl_FragCoord.xy) / iResolution.xy);
-    vec3 direction = uvToSphere(uv);
+    vec3 direction = CartesianByEquirectangular(uv);
     
     Ray camera = Ray(direction * 4.5, -direction);
     
     Geometry geometry = GeometryBuffer(camera);
     
-    vec4 currentFrame = vec4(geometry.normal, 1.);
+    vec4 currentFrame = vec4((geometry.normal), 1.);
     vec4 lastFrame = texture(NORMAL_BUFFER, vec2(gl_FragCoord.xy / iResolution.xy));
-    
     return vec4((currentFrame + lastFrame).rgb, 1.);
   }`
 )
-  
+ 
 const pathTracer = PingPongShader(
   'PATH_TRACER_BUFFER',
   `uniform vec3 iCamera;
@@ -1064,8 +1226,8 @@ const pathTracer = PingPongShader(
   uniform highp sampler2D ELEVATION_BUFFER;
   uniform highp sampler2D PATH_TRACER_BUFFER;
 
-  struct Ray { vec3 origin; vec3 direction; };
-  struct Geometry { float distance; vec3 position; vec3 normal; };
+  ${COMMON}
+
   const int PATH_TRACE_STEPS = 200;
     
   const float EPSILON = .001;
@@ -1074,35 +1236,13 @@ const pathTracer = PingPongShader(
   const float MARIANAS_RADIUS = (EVEREST_RADIUS - .1) * .8;
   const float INFINITY = 9999.;
 
-  #define GammaExpansion(color) pow(vec3(color), vec3(2.2))
-  #define GammaCompression(color) pow(vec3(color), vec3(1. / 2.2))
-   #define saturate(value) clamp(value, 0., 1.)
-
   #define Camera(uv) Ray(iCamera, texture(VIEW_BUFFER, uv).xyz)
-  vec3 uvToSphere(vec2 uv) {
-    const float PI = radians(180.);
-    float phi = ((1. - uv.x) * 2.0 * PI) - PI;
-    float theta = PI * (1.0 - uv.y);
-    float x = sin(theta) * cos(phi);
-    float y = cos(theta);
-    float z = sin(theta) * sin(phi);
-    return vec3(x, y, z);
-  }
-  vec2 sphereToUv(vec3 direction) {
-    const float PI = radians(180.);
-    float phi = atan(direction.z, direction.x);
-    float theta = acos(direction.y);
-    float u = (phi + PI) / (2.0 * PI);
-    float v = theta / PI;
-    return vec2(1. - u, 1. - v);
-  }
+
 
   // SDF's
-
   #define Elevationmap(uv) texture(ELEVATION_BUFFER, uv).r
   float PlanetSDF(in vec3 position) {
-    vec3 normal = - normalize(position);
-    vec2 uv = sphereToUv(normalize(position));
+    vec2 uv = EquirectangularByCartesian(normalize(position));
     float bump = Elevationmap(uv);
     float radius = mix(MARIANAS_RADIUS, EVEREST_RADIUS, bump);
     float d = length(position) - radius;
@@ -1172,12 +1312,12 @@ const pathTracer = PingPongShader(
   }
 
   vec3 DiffuseRadiance(in Ray camera) {
-    #define Environment(direction) GammaExpansion(texture(ENVMAP_TEXTURE, sphereToUv(direction)).rgb)
+    #define Environment(direction) GammaExpansion(texture(ENVMAP_TEXTURE, EquirectangularByCartesian(direction)).rgb)
     for (int i; i < 16; i++) {
       Geometry geometry = GeometryBuffer(camera);
-      if (geometry.distance == INFINITY) return vec3(1);
+      if (geometry.distance == INFINITY) return Environment(camera.direction);
       camera.origin = geometry.position + geometry.normal * .0001;
-      camera.direction = ref(geometry.normal);
+      camera.direction = RandomVectorOnHemisphere(geometry.normal);
     }          
     return vec3(0);
   }
@@ -1188,7 +1328,7 @@ const pathTracer = PingPongShader(
     seed = iTime + random(gl_FragCoord.xy / iResolution.xy); 
     vec2 off = vec2(random(), random());
     uv = saturate((off + gl_FragCoord.xy) / iResolution.xy);
-    vec3 direction = uvToSphere(uv);
+    vec3 direction = CartesianByEquirectangular(uv);
     
     Ray camera = Ray(direction * 4.5, -direction);
     
@@ -1230,121 +1370,32 @@ const light = Shader(
   uniform float iMouse;
   uniform int iFrame;
 
-  
-  struct Uv { float u; float v; };
-  struct Sphere { float longitude; float latitude; };
-  
-  struct Ray { vec3 origin; vec3 direction; };
-  struct Light { vec3 direction; vec3 color; };
-  struct Geometry { vec3 position; vec3 normal; float distance; vec2 coord; float path; };
-  struct Material { vec3 albedo; float roughness; float metallic; float reflectance; };
+  ${COMMON}
 
-  const float PI = radians(180.);
-  const vec3 PLANET_POSITION = vec3(0);
-  const float EVEREST_RADIUS = 1.5;
-  const float MARIANAS_RADIUS = (EVEREST_RADIUS - .1) * .8;
-  const float OCEAN_RADIUS = mix(MARIANAS_RADIUS, EVEREST_RADIUS, .8);
-  const float ATMOSPHERE_RADIUS = EVEREST_RADIUS + .1;
-
-  #define saturate(value) clamp(value, 0., 1.)
-  #define GammaExpansion(color) pow(vec3(color), vec3(2.2))
-  #define GammaCompression(color) pow(vec3(color), vec3(1. / 2.2))
-  #define EncodeVec2(xy) uintBitsToFloat(packHalf2x16(xy))
-  #define DecodeVec2(packedFloat) unpackHalf2x16(floatBitsToUint(packedFloat))
   #define Camera(uv) Ray(iCamera, texture(VIEW_BUFFER, uv).xyz)
-    
-  const Light SUN = Light(normalize(vec3(1, 1, -1)), vec3(1));
-  const float NEAR = .001;
-  const float FAR = 100.;
-  const Geometry DEFAULT_GEOMETRY = Geometry(vec3(0), vec3(0), FAR, vec2(0), 0.);
 
-
-  
-  Sphere SphereByMercator(Uv mercator) {
-    const float PI = radians(180.);
-    float longitude = (PI) * (2. * mercator.u - 1.);
-    float latitude = 2. * atan(exp(((1. - mercator.v) - 0.5) * 2. * PI)) - PI / 2.;
-    return Sphere(longitude, latitude);
-  }
-  Sphere SphereByWgs84(Uv wgs84) {
-    const float PI = radians(180.);
-    float longitude = (PI) * (2. * wgs84.u - 1.);
-    float latitude = (PI / 2.) * (2. * wgs84.v - 1.);
-    return Sphere(longitude, latitude);
-  }
-  Uv Wgs84BySphere(Sphere sphere) {
-    const float PI = radians(180.);
-    float u = ((sphere.longitude / PI) + 1.) / 2.;
-    float v = ((sphere.latitude / (PI / 2.)) + 1.) / 2.;
-    return Uv(u, v);
-  }
-  Uv MercatorBySphere(Sphere sphere) {
-    const float PI = radians(180.);
-    #define ln(value) log(value)
-    float u = ((sphere.longitude / PI) + 1.) / 2.;
-    const float MERCATOR_LATITUDE_BOUNDARY = atan(sinh(PI)); // 85.05112878°
-    float v = (PI - ln(tan(PI / 4. + clamp((-MERCATOR_LATITUDE_BOUNDARY), (MERCATOR_LATITUDE_BOUNDARY), sphere.latitude) / 2.))) / (2. * PI);
-    return Uv(u, v);
-  }
-  Uv MercatorByWgs84(Uv wgs84) {
-    Sphere sphere = SphereByWgs84(wgs84);
-    return MercatorBySphere(sphere);
-  }
-  Uv Wgs84ByMercator(Uv mercator) {
-    Sphere sphere = SphereByMercator(mercator);
-    return Wgs84BySphere(sphere);
-  }
-  vec3 DirectionbySphere(Sphere sphere) {
-    const float PI = radians(180.);
-    float x = cos(sphere.latitude) * cos(sphere.longitude);
-    float y = sin(sphere.latitude);
-    float z = cos(sphere.latitude) * sin(sphere.longitude);
-    return vec3(x, y, z);
-  }
-  Sphere SphereByDirection(vec3 direction) {
-    const float PI = radians(180.);
-    float longitude = atan(direction.z, direction.x);
-    float latitude = asin(direction.y);
-    return Sphere(longitude, latitude);
-  }
-  Uv MercatorTileBySphere(Sphere sphere) {
+  vec2 MercatorTileBySpherical(vec2 spherical) {
     const float PI = radians(180.);
     const float MERCATOR_LATITUDE_BOUNDARY = atan(sinh(PI)); // 85.05112878°
-    float u = (sphere.longitude - TILE_LONGITUDE_START) / (TILE_LONGITUDE_END - TILE_LONGITUDE_START);
+    float u = (spherical.x - TILE_LONGITUDE_START) / (TILE_LONGITUDE_END - TILE_LONGITUDE_START);
     float latStartMercator = log(tan(PI / 4.0 + (TILE_LATITUDE_START) / 2.0));
     float latEndMercator = log(tan(PI / 4.0 + (TILE_LATITUDE_END) / 2.0));
-    float latitudeMercator = log(tan(PI / 4.0 + clamp((-MERCATOR_LATITUDE_BOUNDARY), (MERCATOR_LATITUDE_BOUNDARY), sphere.latitude) / 2.0));
+    float latitudeMercator = log(tan(PI / 4.0 + clamp((-MERCATOR_LATITUDE_BOUNDARY), (MERCATOR_LATITUDE_BOUNDARY), spherical.y) / 2.0));
     float v = (latitudeMercator - latStartMercator) / (latEndMercator - latStartMercator);
-    return Uv(u, v);
+    return vec2(u, v);
   }
-  vec3 Basemap(Sphere sphere) {
+  vec3 Basemap(vec2 spherical) {
     if (
-     sphere.longitude >= TILE_LONGITUDE_START && 
-     sphere.longitude <= TILE_LONGITUDE_END &&
-     sphere.latitude >= TILE_LATITUDE_START && 
-     sphere.latitude <= TILE_LATITUDE_END
+     spherical.x >= TILE_LONGITUDE_START && 
+     spherical.x <= TILE_LONGITUDE_END &&
+     spherical.y >= TILE_LATITUDE_START && 
+     spherical.y <= TILE_LATITUDE_END
     ) {
-      Uv mercator = MercatorTileBySphere(sphere);
-      return GammaExpansion(GammaExpansion(texture(OSM_TEXTURE, vec2(mercator.u, mercator.v)).rgb));
+      vec2 mercator = MercatorTileBySpherical(spherical);
+      return GammaExpansion(GammaExpansion(texture(OSM_TEXTURE, mercator).rgb));
     }
-    Uv wgs = Wgs84BySphere(sphere);
-    return ((texture(BASEMAP_TEXTURE, vec2(wgs.u, wgs.v)).rgb));
-  }
-
-  vec2 sphereToUv(vec3 direction) {
-    float phi = atan(direction.z, direction.x);
-    float theta = acos(direction.y);
-    float u = (phi + PI) / (2.0 * PI);
-    float v = theta / PI;
-    return vec2(1. - u, 1. - v);
-  }
-  vec3 uvToSphere(vec2 uv) {
-    float phi = ((1. - uv.x) * 2.0 * PI) - PI;
-    float theta = PI * (1.0 - uv.y);
-    float x = sin(theta) * cos(phi);
-    float y = cos(theta);
-    float z = sin(theta) * sin(phi);
-    return vec3(x, y, z);
+    vec2 wgs = EquirectangularBySpherical(spherical);
+    return (texture(BASEMAP_TEXTURE, wgs).rgb);
   }
 
   Geometry PlanetGeometry(vec2 uv, Ray camera) {
@@ -1352,8 +1403,8 @@ const light = Shader(
     float distance = depth * FAR;
     if (depth >= .9) return DEFAULT_GEOMETRY;
     vec3 position = camera.origin + camera.direction * distance;
-    vec2 coord = sphereToUv(normalize(position));
-    vec3 normal = texture(NORMAL_BUFFER, coord).rgb * 2. - 1. /* / float(min(iFrame, 100))*/;
+    vec2 coord = EquirectangularByCartesian(normalize(position));
+    vec3 normal = normalize(texture(NORMAL_BUFFER, coord).rgb * 2. - 1.) /* / float(min(iFrame, 100))*/;
     return Geometry(position, normal, distance, coord, 0.);
   }
 
@@ -1375,7 +1426,7 @@ const light = Shader(
     float distance = boundary.x;
     if (distance >= FAR) return DEFAULT_GEOMETRY;
     vec3 position = camera.origin + camera.direction * distance;
-    vec2 coord = sphereToUv(normalize(position));
+    vec2 coord = EquirectangularByCartesian(normalize(position));
     vec3 normal = normalize(position);
     float path = abs(boundary.y - boundary.x);
     return Geometry(position, normal, distance, coord, path);
@@ -1385,7 +1436,7 @@ const light = Shader(
     float distance = boundary.x;
     if (distance >= FAR) return DEFAULT_GEOMETRY;
     vec3 position = camera.origin + camera.direction * distance;
-    vec2 coord = sphereToUv(normalize(position));
+    vec2 coord = EquirectangularByCartesian(normalize(position));
     vec3 normal = normalize(position);
     float path = abs(boundary.y - boundary.x);
     return Geometry(position, normal, distance, coord, path);
@@ -1409,35 +1460,6 @@ const light = Shader(
     seed++;
     return fract(sin(seed+dot(uv, vec2(127.1, 311.7))) * 4568.7564);
   }
-  float SSAO(vec2 uv, Ray camera, Geometry geometry) {
-    const float INTENSITY = 1.;
-    vec2 random = normalize(vec2(random(uv), random(uv)));
-    const vec2 dire[4] = vec2[](vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0,-1));
-    const float SAMPLE_RAD = 0.1;
-    float ssao;
-    int iterations = 4;
-    for(int i; i < iterations; i++) {
-      vec2 coord1 = reflect(dire[i], random) * SAMPLE_RAD;
-      vec2 coord2 = vec2(coord1.x * cos(radians(45.0)) - coord1.y * sin(radians(45.0)), coord1.x * cos(radians(45.0)) + coord1.y * sin(radians(45.0)));
-      ssao += AmbientOcclusion(uv + coord1 * 0.25, geometry, INTENSITY);
-      ssao += AmbientOcclusion(uv + coord2 * 0.5, geometry, INTENSITY);
-      ssao += AmbientOcclusion(uv + coord1 * 0.75, geometry, INTENSITY);
-      ssao += AmbientOcclusion(uv + coord2, geometry, INTENSITY);
-    }
-    ssao = ssao / (float(iterations) * 4.);
-    ssao = 1. - ssao * INTENSITY;
-    return ssao
-      * pow(ssao, .0001)
-      * pow(ssao, .001)
-      * pow(ssao, .01)
-      * pow(ssao, .1)
-      * pow(ssao, 1.)
-      * pow(smoothstep(0., 1.,smoothstep(0., 1.,smoothstep(0., 1.,smoothstep(0., 1.,smoothstep(0., 1.,smoothstep(0., 1.,smoothstep(0., 1.,smoothstep(0., 1.,ssao)))))))), 4.)
-      * pow(smoothstep(0., 1.,smoothstep(0., 1.,smoothstep(0., 1.,ssao))), 3.)
-      * pow(smoothstep(0., 1.,smoothstep(0., 1.,ssao)), 2.)
-      * pow(pow(ssao, 100.), .05)
-      * mix(.5, 1., pow(pow(ssao, 1000.), .1));
-  }
 
   vec3 TurboColorPallete(float t) {
     t = clamp(0., 1., t);
@@ -1452,9 +1474,9 @@ const light = Shader(
   }
   
   vec3 IBLBaked(in Ray camera, in Geometry geometry, in Material material, in vec3 irradiance, in float ao) {
-    #define Irradiance(normal) texture(IRRADIANCE_BUFFER, sphereToUv(normal)).rgb
-    #define BluryRadiance(direction) texture(RADIANCE_BUFFER, sphereToUv(direction)).rgb
-    #define OriginalRadiance(direction) texture(ENVIRONMENT_TEXTURE, sphereToUv(direction)).rgb
+    #define Irradiance(normal) texture(IRRADIANCE_BUFFER, EquirectangularByCartesian(normal)).rgb
+    #define BluryRadiance(direction) texture(RADIANCE_BUFFER, EquirectangularByCartesian(direction)).rgb
+    #define OriginalRadiance(direction) texture(ENVIRONMENT_TEXTURE, EquirectangularByCartesian(direction)).rgb
     #define Brdf(NdotV, roughness) texture(BRDF_BUFFER, vec2(NdotV, roughness)).rg
 
     vec3 V = -camera.direction;
@@ -1477,9 +1499,9 @@ const light = Shader(
     return mix(diffuse, specular, fresnel);
   }
   vec3 IBL(in Ray camera, in Geometry geometry, in Material material) {
-    #define Irradiance(normal) texture(IRRADIANCE_BUFFER, sphereToUv(normal)).rgb
-    #define BluryRadiance(direction) texture(RADIANCE_BUFFER, sphereToUv(direction)).rgb
-    #define OriginalRadiance(direction) texture(ENVIRONMENT_TEXTURE, sphereToUv(direction)).rgb
+    #define Irradiance(normal) texture(IRRADIANCE_BUFFER, EquirectangularByCartesian(normal)).rgb
+    #define BluryRadiance(direction) texture(RADIANCE_BUFFER, EquirectangularByCartesian(direction)).rgb
+    #define OriginalRadiance(direction) texture(ENVIRONMENT_TEXTURE, EquirectangularByCartesian(direction)).rgb
     #define Brdf(NdotV, roughness) texture(BRDF_BUFFER, vec2(NdotV, roughness)).rg
       
     vec3 V = -camera.direction;
@@ -1504,9 +1526,9 @@ const light = Shader(
   }
 
   vec3 Glass(in Ray camera, in Geometry geometry, in Material material) {
-    #define Irradiance(normal) texture(IRRADIANCE_BUFFER, sphereToUv(normal)).rgb
-    #define BluryRadiance(direction) texture(RADIANCE_BUFFER, sphereToUv(direction)).rgb
-    #define OriginalRadiance(direction) texture(ENVIRONMENT_TEXTURE, sphereToUv(direction)).rgb
+    #define Irradiance(normal) texture(IRRADIANCE_BUFFER, EquirectangularByCartesian(normal)).rgb
+    #define BluryRadiance(direction) texture(RADIANCE_BUFFER, EquirectangularByCartesian(direction)).rgb
+    #define OriginalRadiance(direction) texture(ENVIRONMENT_TEXTURE, EquirectangularByCartesian(direction)).rgb
     #define Brdf(NdotV, roughness) texture(BRDF_BUFFER, vec2(NdotV, roughness)).rg
       
     vec3 V = -camera.direction;
@@ -1530,7 +1552,7 @@ const light = Shader(
   }
 
   vec3 Environment(vec3 direction) {
-    vec3 color = texture(ENVIRONMENT_TEXTURE, sphereToUv(direction)).rgb;
+    vec3 color = texture(ENVIRONMENT_TEXTURE, EquirectangularByCartesian(direction)).rgb;
     return color * color + color;
   }
 
@@ -1606,6 +1628,23 @@ const light = Shader(
     if (wavesDistance < costa) return GammaExpansion(vec3(abs(sin(wavesDistance - iTime * 0.001)) * smoothstep(0., 1., (1. - wavesDistance / costa))));
     else return vec3(0.);
   }
+  float OutlineA(vec2 uv) {
+    float wavesDistance = length(texture(JUMP_FLOODING_BUFFER, uv).r) * 200.;
+    return wavesDistance < 3.15 ? 1. : 0.;
+  }
+    
+  float OutlineB(vec2 uv) {
+    float wavesDistance = length(texture(JUMP_FLOODING_BUFFER, uv).r) * 200.;
+    return wavesDistance < 3.1 ? 1. : 0.;
+  }
+
+  float Gradient(vec2 uv) {
+    float wavesDistance = length(texture(JUMP_FLOODING_BUFFER, uv).r) * 200.;
+    float costa = 20.;
+    if (wavesDistance < costa) return smoothstep(0., 1., 1. - wavesDistance / costa);
+    else return 0.;
+  }
+    
 
   vec3 Render(vec2 uv) {
     Ray camera = Camera(uv);
@@ -1629,18 +1668,21 @@ const light = Shader(
     // Planet
     if (planet.distance < .9 * FAR) {
       vec3 bakedIrradiance = texture(PATH_TRACER_BUFFER, planet.coord).rgb /* / float(min(iFrame, 200))*/;
-      vec3 irradiance = GammaExpansion(bakedIrradiance);
+      vec3 irradiance = GammaExpansion(bakedIrradiance) * 2.;
       float ao = GammaExpansion(texture(PATH_TRACER_OCCLUSION_BUFFER, planet.coord).rgb).r;
       float shadows = texture(GEOMETRY_BUFFER, uv).a;
-      vec2 coord = sphereToUv(normalize(planet.position));
 
-      Sphere sphere = SphereByWgs84(Uv(coord.x, coord.y));
+      vec2 spherical = SphericalByEquirectangular(planet.coord);
    
-      vec3 elevation = TurboColorPallete(smoothstep(0., 1., texture(ELEVATION_BUFFER, coord).r));
-      vec3 albedo = (Basemap(sphere));
-      Material material = Material(vec3(albedo), .0, 0., .04);
+      vec3 elevation = TurboColorPallete(smoothstep(0., 1., texture(ELEVATION_BUFFER, planet.coord).r));
+      vec3 albedo = (Basemap(spherical));
+      
+      //float t = texture(ELEVATION_BUFFER, coord).r;
+      //t = abs(sin(t * 200.));
+      //albedo = (elevation);
+      Material material = Material(vec3(albedo), 1.0, 0., .0);
     
-      vec3 indirect = IBLBaked(camera, planet, material, (irradiance), ao);
+      vec3 indirect = IBLBaked(camera, planet, material, (irradiance), ao) * mix(.5, 1., shadows) * pow(ao, .1) * mix(.8, 1., ao);
       vec3 direct = PBR(camera, planet, material, SUN) * ao * shadows;
 
       color = mix(indirect, direct, direct);
@@ -1659,17 +1701,27 @@ const light = Shader(
       float thickness = pow(abs(planet.distance - ocean.distance), 1.);
       float beerlambert = pow(saturate(exp(- 10. * thickness)), 1.);
       vec3 albedo = mix(GammaExpansion(TurboColorPallete(0.)), (color), beerlambert);
+
       
-      albedo = mix(albedo , toonWaves, toonWaves * .3);
+      vec2 spherical = SphericalByEquirectangular(planet.coord);
+   
+      vec3 basemap = (Basemap(spherical));
+      
+      float outlineA = OutlineA(ocean.coord);
+      float outlineB = OutlineB(ocean.coord);
+
+      albedo = mix(albedo, toonWaves, toonWaves * .3);
+      albedo = mix(albedo, vec3(1), outlineA);
+      albedo = mix(albedo, vec3(0), outlineB);
+
       Material material = Material(GammaCompression(albedo), 0., 0., .16);
       vec3 indirect = IBL(camera, ocean, material);
       vec3 direct = PBR(camera, ocean, material, SUN);
       vec3 light = mix(indirect, direct, direct);
 
-      //color = mix(color, light, indirect);
-      //color = vec3();
-
       color = mix(color, light, 1. - beerlambert);
+
+     // color = mix(color, toonWaves, (ocean.normal.y * .5 + .5) * (ocean.normal.x * .5 + .5) * (ocean.normal.z * .5 + .5));
       
    }
     return mix(color, light, light);
@@ -1680,7 +1732,7 @@ const light = Shader(
 
 const image = Pixel(
   `uniform highp sampler2D PATH_TRACED_BUFFER;
-  uniform highp sampler2D JUMP_FLOODING_BUFFER;
+  uniform highp sampler2D PATH_TRACER_BUFFER;
   
   uniform float iTime;
   uniform int iFrame;
@@ -1690,23 +1742,6 @@ const image = Pixel(
   #define EncodeVec2(xy) uintBitsToFloat(packHalf2x16(xy))
   #define DecodeVec2(packedFloat) unpackHalf2x16(floatBitsToUint(packedFloat))
     
-  vec3 uvToSphere(vec2 uv) {
-    const float PI = radians(180.);
-    float phi = (uv.x * 2.0 * PI) - PI;
-    float theta = PI * (1.0 - uv.y);
-    float x = sin(theta) * cos(phi);
-    float y = cos(theta);
-    float z = sin(theta) * sin(phi);
-    return vec3(x, y, z);
-  }
-  vec2 sphereToUv(vec3 direction) {
-    const float PI = radians(180.);
-    float phi = atan(direction.z, direction.x);
-    float theta = acos(direction.y);
-    float u = (phi + PI) / (2.0 * PI);
-    float v = theta / PI;
-    return vec2(u, 1. - v);
-  }
 
   vec2 PincushionDistortion(vec2 uv, float strength) {
     vec2 st = uv - 0.5;
@@ -1734,7 +1769,8 @@ const image = Pixel(
   #define Vignetting(uv, color) color * (.5 + .5 * pow(16. * uv.x * uv.y * (1. - uv.x) * (1. - uv.y), .25))
 
   vec4 Pixel(vec2 uv) {
-    //return vec4(((texture(JUMP_FLOODING_BUFFER, uv).rgb)), 1.);
+    //return vec4((texture(PATH_TRACER_BUFFER, uv).rgb / (float(iFrame) + 1.)), 1.);
+    //return vec4(((texture(GEOMETRY_BUFFER, uv).rgb)), 1.);
     //return vec4(((texture(PATH_TRACER_BUFFER, uv).rgb / float(iFrame))), 1.);
     vec3 color = ChromaticAbberation(uv, PATH_TRACED_BUFFER);
     color = Vignetting(uv, color);
@@ -1753,13 +1789,12 @@ elevation()
 
 const lerp = (a, b, t) => (t < 0 ? a : t > 1 ? b : (1 - t) * a + t * b)
 const byFrame = timestamp => {
-  const z = Math.floor(lerp(1, 0, Math.cos(timestamp * 0.0002) * 0.5 + 0.5) * 8)
-
+  // GlobalUniformComponents.get('iZoom')[1] = lerp(1, 0, Math.cos(timestamp * 0.0002) * 0.5 + 0.5)
   UpdateCameraSystem()
-  BasemapSystem({ z })
+  BasemapSystem()
   view()
   geometry()
-  //normals()
+  // normals()
   //pathTracer()
   light()
   //if (GlobalUniformComponents.get('iFrame')[1] < 600) jumpFlooding()
