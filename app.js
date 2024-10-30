@@ -14,6 +14,20 @@ const GlobalUniformComponents = new Map([
   ['iZoom', ['uniform1f', 0]]
 ])
 
+const CartesianBySpherical = ({ longitude, latitude }) => {
+  const { cos, sin } = Math
+  const x = cos(latitude) * sin(longitude) // x = 0 quando longitude é 0 ou ±180°, e ±1 em ±90°
+  const y = sin(latitude) // y = -1 em -90°, 0 em 0°, e 1 em 90°
+  const z = cos(latitude) * cos(longitude) // z = 1 em 0°, -1 em ±180°, e 0 em ±90°
+  return { x, y, z }
+}
+const SphericalByEquirectangular = ({ u, v }) => {
+  const { PI } = Math
+  const radians = deg => (deg * PI) / 180
+  const longitude = (u * 2 - 1) * radians(180)
+  const latitude = (v * 2 - 1) * radians(90)
+  return { longitude, latitude }
+}
 const UpdateCameraSystem = () => {
   const iMouse = GlobalUniformComponents.get('iMouse')[1]
   const iResolution = GlobalUniformComponents.get('iResolution')[1]
@@ -23,32 +37,20 @@ const UpdateCameraSystem = () => {
   const m = { u: iMouse[0] / iResolution[0], v: iMouse[1] / iResolution[1] }
 
   const theta = -m.x * PI * 2 - 2.3
-  const radius = 55
-  const CartesianBySpherical = ({ longitude, latitude }) => {
-    const { cos, sin } = Math
-    const x = cos(latitude) * sin(longitude) // x = 0 quando longitude é 0 ou ±180°, e ±1 em ±90°
-    const y = sin(latitude) // y = -1 em -90°, 0 em 0°, e 1 em 90°
-    const z = cos(latitude) * cos(longitude) // z = 1 em 0°, -1 em ±180°, e 0 em ±90°
-    return { x, y, z }
-  }
-  const SphericalByEquirectangular = ({ u, v }) => {
-    const { PI } = Math
-    const radians = deg => (deg * PI) / 180
-    const longitude = (u * 2 - 1) * radians(180)
-    const latitude = (v * 2 - 1) * radians(90)
-    return { longitude, latitude }
-  }
+
   const lerp = (a, b, t) => (t < 0 ? a : t > 1 ? b : (1 - t) * a + t * b)
   const zoom = Math.floor(lerp(0, 19, GlobalUniformComponents.get('iZoom')[1]))
+  const radius = lerp(55, 20, zoom)
   const { longitude, latitude } = SphericalByEquirectangular(m)
   const { x, y, z } = CartesianBySpherical({ longitude: longitude, latitude })
   const current = GlobalUniformComponents.get('iCamera')[1]
-  const iCamera = new Float32Array([lerp(current[0], radius * x, 0.5 / 2 ** zoom), lerp(current[1], radius * y, 0.5 / 2 ** zoom), lerp(current[2], radius * z, 0.5 / 2 ** zoom)])
+  const iCamera = new Float32Array([lerp(current[0], radius * x, 0.5 / 2 ** (zoom + 2)), lerp(current[1], radius * y, 0.5 / 2 ** (zoom + 2)), lerp(current[2], radius * z, 0.5 / 2 ** (zoom + 2))])
   GlobalUniformComponents.get('iCamera')[1] = iCamera
 }
 
+let sinal = 1
 document.body.onclick = () => {
-  const sinal = GlobalUniformComponents.get('iZoom')[1] >= 1 ? -1 : +1
+  if (GlobalUniformComponents.get('iZoom')[1] > 1 || GlobalUniformComponents.get('iZoom')[1] < 0) sinal *= -1
   GlobalUniformComponents.get('iZoom')[1] += sinal * (1 / 19)
 }
 
@@ -927,7 +929,7 @@ const geometry = Shader(
   vec4 Pixel(vec2 uv) {
     Ray camera = Camera(uv);
     vec2 boundary = SphereBoundary(camera, EVEREST_RADIUS);
-    return vec4(vec3(boundary.x / FAR), 1.);
+    //return vec4(vec3(boundary.x / FAR), 1.);
     float distance = RayMarcher(camera, boundary.x);
     float depth = distance / FAR;
     vec3 position = camera.origin + camera.direction * distance;
@@ -1695,7 +1697,7 @@ const light = Shader(
       vec3 tangent = normalize(cross(ocean.normal, vec3(0.0, 1.0, 0.0)));
       vec3 bitangent = cross(ocean.normal, tangent);
       mat3 TBN = mat3(tangent, bitangent, ocean.normal);
-      //ocean.normal = normalize(TBN * normalize(mix(aWave, bWave, .5)));
+      ocean.normal = normalize(TBN * normalize(mix(aWave, bWave, .5)));
       vec3 toonWaves = JumpFlooding(ocean.coord);
 
       float thickness = pow(abs(planet.distance - ocean.distance), 1.);
